@@ -76,9 +76,11 @@ def build_strategy():
             bb_period=getattr(config, "BB_PERIOD", 20),
             bb_std=getattr(config, "BB_STD", 2.0),
             rsi_period=getattr(config, "SCALP_RSI_PERIOD", 14),
-            rsi_oversold=getattr(config, "SCALP_RSI_OVERSOLD", 30.0),
-            rsi_overbought=getattr(config, "SCALP_RSI_OVERBOUGHT", 70.0),
+            rsi_oversold=getattr(config, "SCALP_RSI_OVERSOLD", 35.0),
+            rsi_overbought=getattr(config, "SCALP_RSI_OVERBOUGHT", 65.0),
             atr_period=getattr(config, "ATR_PERIOD", 14),
+            band_touch_frac=getattr(config, "SCALP_BAND_TOUCH_FRAC", 0.85),
+            require_both=getattr(config, "SCALP_REQUIRE_BOTH", False),
         )
         return strat_scalp.latest_signal, params, params.warmup + 50
     # default: trend

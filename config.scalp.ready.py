@@ -36,8 +36,10 @@ ATR_PERIOD = 14
 BB_PERIOD = 20
 BB_STD = 2.0
 SCALP_RSI_PERIOD = 14
-SCALP_RSI_OVERSOLD = 30.0
-SCALP_RSI_OVERBOUGHT = 70.0
+SCALP_RSI_OVERSOLD = 40.0       # higher = more BUY signals
+SCALP_RSI_OVERBOUGHT = 60.0     # lower = more SELL signals
+SCALP_BAND_TOUCH_FRAC = 0.7     # 0..1: lower = triggers sooner = MORE trades
+SCALP_REQUIRE_BOTH = False      # False = band OR RSI triggers = many more trades
 
 # ---- RISK (aggressive, as requested) ----
 RISK_PER_TRADE_PCT = 2.0     # bigger lots per trade (was 0.25)

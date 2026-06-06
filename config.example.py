@@ -44,6 +44,7 @@ RISK_PER_TRADE_PCT = 0.5    # risk this % of account equity per trade
 ATR_SL_MULTIPLIER = 2.0     # stop-loss distance = ATR * this (volatility-scaled)
 REWARD_RISK_RATIO = 2.0     # take-profit distance = stop distance * this
 MAX_OPEN_POSITIONS = 1      # never hold more than this many positions at once
+MAX_TRADES_PER_DAY = 0      # max NEW trades opened per day (0 = unlimited). Set to 1 for one trade/day.
 DAILY_MAX_LOSS_PCT = 3.0    # if equity drops this % below today's start -> STOP
 MIN_LOT = 0.01              # broker minimum lot fallback
 MAX_LOT = 1.0               # hard cap on position size, safety against bugs

@@ -103,6 +103,8 @@ def run_cycle(executor: OrderExecutor, risk: RiskManager, params: StrategyParams
             notifier.trade_closed(config.SYMBOL, "flip", pos.volume)
 
     # 5. Open a new position if risk rules allow.
+    if risk.daily_trade_limit_reached():
+        return
     if not risk.can_open_new_position(len(executor.open_positions())):
         return
     if sig.atr <= 0:
@@ -119,6 +121,7 @@ def run_cycle(executor: OrderExecutor, risk: RiskManager, params: StrategyParams
     result = executor.open_market_order(sig.action, lot, sl_price, tp_price)
     # Notify when an order was actually placed (or would be, in dry-run).
     if config.DRY_RUN or result is not None:
+        risk.record_trade_opened()
         notifier.trade_opened(sig.action, config.SYMBOL, lot, sig.price, sl_price, tp_price)
 
 
@@ -151,6 +154,7 @@ def main() -> None:
             daily_max_loss_pct=config.DAILY_MAX_LOSS_PCT,
             min_lot=config.MIN_LOT,
             max_lot=config.MAX_LOT,
+            max_trades_per_day=getattr(config, "MAX_TRADES_PER_DAY", 0),
         )
         executor = OrderExecutor(
             symbol=config.SYMBOL,

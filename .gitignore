@@ -1,5 +1,6 @@
 # Local secrets - never commit real credentials
 config.py
+config.scalp.py
 
 # Logs
 *.log

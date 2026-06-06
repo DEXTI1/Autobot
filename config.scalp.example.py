@@ -51,8 +51,10 @@ ATR_PERIOD = 14
 BB_PERIOD = 20
 BB_STD = 2.0
 SCALP_RSI_PERIOD = 14
-SCALP_RSI_OVERSOLD = 30.0
-SCALP_RSI_OVERBOUGHT = 70.0
+SCALP_RSI_OVERSOLD = 35.0
+SCALP_RSI_OVERBOUGHT = 65.0
+SCALP_BAND_TOUCH_FRAC = 0.85    # 0..1: lower = triggers sooner = more trades
+SCALP_REQUIRE_BOTH = False      # False = band OR RSI triggers (more trades)
 
 # ---------------------------------------------------------------------------
 # RISK MANAGEMENT  (tighter for scalping)

@@ -1,23 +1,25 @@
 """
-Mean-reversion scalping strategy (Bollinger Bands + RSI).
+Mean-reversion scalping strategy (Bollinger Bands + RSI) - tunable sensitivity.
 
-Designed for fast timeframes (M1/M5). Unlike the trend strategy, this one bets
-that short, sharp moves to an extreme tend to SNAP BACK toward the average:
+It bets that stretched moves snap back toward the average:
+    - Price near/below the LOWER band (and/or RSI low)  -> BUY  (expect bounce up)
+    - Price near/above the UPPER band (and/or RSI high) -> SELL (expect drop)
 
-    - Price closes BELOW the lower Bollinger Band AND RSI is oversold  -> BUY
-      (expecting a bounce back up to the middle band)
-    - Price closes ABOVE the upper Bollinger Band AND RSI is overbought -> SELL
-      (expecting a drop back down)
+WHY IT MIGHT TRADE RARELY: requiring BOTH "price beyond the band" AND "RSI at an
+extreme" at the same instant is uncommon. The settings below let you loosen it:
 
-Exits are handled by the bot's ATR-based stop-loss / take-profit and the
-trailing stop, exactly like the trend strategy - so the rest of the system
-(risk.py, executor.py, bot.py) works unchanged.
+    band_touch_frac : how close to the band counts as a trigger.
+                      1.0 = must reach the band exactly (strict, few trades)
+                      0.8 = trigger at 80% of the way to the band (more trades)
+    require_both    : True  = need band AND RSI (strict)
+                      False = band OR RSI is enough (many more trades)
+    rsi_oversold / rsi_overbought : loosen these (e.g. 40/60) for more signals.
 
-Same interface as strategy.py: a Params dataclass, add_indicators(), evaluate(),
-and latest_signal(). This is what makes the two strategies swappable.
+Exits use the bot's ATR stop-loss / take-profit / trailing stop, so the rest of
+the system (risk.py, executor.py, bot.py) works unchanged.
 
-NOTE: Scalping is genuinely hard - spread + commission eat tiny profits. Test on
-DEMO and backtest with realistic costs before ever using real money.
+NOTE: more trades != more profit. Faster, looser scalping takes MORE hits from
+spread + commission. Test on DEMO and backtest with realistic costs.
 """
 from __future__ import annotations
 
@@ -31,13 +33,18 @@ from strategy import BUY, SELL, HOLD, Signal  # reuse the shared Signal/constant
 
 @dataclass
 class ScalpParams:
-    bb_period: int = 20        # Bollinger Band lookback (the moving average)
-    bb_std: float = 2.0        # how many standard deviations for the bands
+    bb_period: int = 20          # Bollinger Band lookback (the moving average)
+    bb_std: float = 2.0          # how many standard deviations for the bands
     rsi_period: int = 14
-    rsi_oversold: float = 30.0   # BUY only when RSI is below this
-    rsi_overbought: float = 70.0 # SELL only when RSI is above this
+    rsi_oversold: float = 35.0   # BUY side RSI threshold (raise -> more trades)
+    rsi_overbought: float = 65.0 # SELL side RSI threshold (lower -> more trades)
     atr_period: int = 14
-    # Alias so generic code that expects a warmup length still works:
+    # --- sensitivity knobs (the "make it trade more" controls) ---
+    band_touch_frac: float = 0.85  # 0..1: fraction of the way to the band that
+                                   # counts as a touch. <1.0 = more trades.
+    require_both: bool = False     # False = band OR RSI triggers (more trades);
+                                   # True  = need BOTH (strict, fewer trades).
+
     @property
     def warmup(self) -> int:
         return max(self.bb_period, self.rsi_period, self.atr_period) + 5
@@ -71,25 +78,36 @@ def evaluate(df: pd.DataFrame, i: int, p: ScalpParams) -> Signal:
     upper, lower, mid = float(row["bb_upper"]), float(row["bb_lower"]), float(row["bb_mid"])
     rsi_val = float(row["rsi"])
 
-    # Map to the shared Signal's snapshot fields for logging:
-    #   fast=upper band, slow=lower band, trend=middle band, rsi=rsi
+    # snapshot for logging: fast=upper, slow=lower, trend=mid, rsi=rsi
     snap = dict(fast=upper, slow=lower, trend=mid, rsi=rsi_val)
 
-    below_lower = price < lower
-    above_upper = price > upper
+    # "Touch" levels sit partway between the middle band and the outer band.
+    # band_touch_frac=1.0 -> the outer band; 0.85 -> 85% of the way out.
+    lower_touch = mid - (mid - lower) * p.band_touch_frac
+    upper_touch = mid + (upper - mid) * p.band_touch_frac
 
-    if below_lower and rsi_val <= p.rsi_oversold:
-        return Signal(BUY, price, atr_val, "below lower band + RSI oversold", **snap)
-    if above_upper and rsi_val >= p.rsi_overbought:
-        return Signal(SELL, price, atr_val, "above upper band + RSI overbought", **snap)
+    near_lower = price <= lower_touch
+    near_upper = price >= upper_touch
+    rsi_low = rsi_val <= p.rsi_oversold
+    rsi_high = rsi_val >= p.rsi_overbought
 
-    if below_lower:
-        reason = "below lower band but RSI not oversold - skip"
-    elif above_upper:
-        reason = "above upper band but RSI not overbought - skip"
+    if p.require_both:
+        buy = near_lower and rsi_low
+        sell = near_upper and rsi_high
     else:
-        reason = "inside bands"
-    return Signal(HOLD, price, atr_val, reason, **snap)
+        buy = near_lower or rsi_low
+        sell = near_upper or rsi_high
+
+    # If both somehow trigger, prefer the stronger stretch (distance from mid).
+    if buy and sell:
+        buy = (mid - price) >= (price - mid)
+
+    if buy:
+        return Signal(BUY, price, atr_val, "stretched low -> mean-revert up", **snap)
+    if sell:
+        return Signal(SELL, price, atr_val, "stretched high -> mean-revert down", **snap)
+
+    return Signal(HOLD, price, atr_val, "inside bands / RSI neutral", **snap)
 
 
 def latest_signal(df: pd.DataFrame, p: ScalpParams) -> Signal:

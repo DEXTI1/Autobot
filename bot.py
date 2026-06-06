@@ -1,52 +1,88 @@
 """
-Main entry point for the Exness MT5 advanced trend-following bot.
+Main entry point for the Exness MT5 trading bot.
+
+Supports TWO strategies, chosen via the `STRATEGY` setting in the config:
+    - "trend"  -> strategy.py        (trend-following EMA crossover + RSI)
+    - "scalp"  -> strategy_scalp.py  (Bollinger Band + RSI mean-reversion)
+
+You can run a different config file with --config, which lets you run two bots
+side by side (e.g. trend on one account, scalp on another):
+    python bot.py                          # uses config.py
+    python bot.py --config config.scalp.py # uses a second config
 
 Flow each cycle:
     1. Refresh account equity + daily guard.
     2. If daily loss limit hit -> close everything and stop trading for the day.
     3. Update trailing stops on any open position.
-    4. Fetch bars, compute the advanced signal (trend + cross + RSI).
+    4. Fetch bars, compute the signal for the selected strategy.
     5. On a flip signal: close opposite positions, then (if allowed) open a new
        ATR-sized position with SL/TP attached.
 
-Defaults to DRY_RUN and a DEMO account. Read the README before going live.
-Stop the bot at any time with Ctrl+C.
+Defaults to DRY_RUN and a DEMO account. Stop at any time with Ctrl+C.
 """
 from __future__ import annotations
 
+import argparse
+import importlib.util
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
 
 import mt5_client
+import strategy as strat_trend
+import strategy_scalp as strat_scalp
 from executor import OrderExecutor
 from notifier import TelegramNotifier
 from risk import RiskManager
-from strategy import BUY, SELL, HOLD, StrategyParams, latest_signal
+from strategy import BUY, SELL, HOLD
 
-try:
-    import config
-except ImportError:
-    sys.exit("ERROR: config.py not found. Copy config.example.py to config.py and fill it in.")
+# Set in main() once we know which config file to load.
+config = None
+log = logging.getLogger("bot")
 
 
-def setup_logging() -> None:
+def setup_logging(log_file: str) -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler("bot.log", encoding="utf-8"),
+            logging.FileHandler(log_file, encoding="utf-8"),
         ],
     )
 
 
-log = logging.getLogger("bot")
+def load_config(path: str):
+    """Load a config .py file from a path as a module."""
+    if not os.path.exists(path):
+        sys.exit(f"ERROR: config file '{path}' not found. "
+                 f"Copy config.example.py to config.py and fill it in.")
+    spec = importlib.util.spec_from_file_location("botconfig", path)
+    cfg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cfg)
+    return cfg
 
 
-def build_params() -> StrategyParams:
-    return StrategyParams(
+def build_strategy():
+    """
+    Return (signal_fn, params, bars_needed) for the configured strategy.
+    Both strategies expose latest_signal(df, params) with the same signature.
+    """
+    name = getattr(config, "STRATEGY", "trend").lower()
+    if name == "scalp":
+        params = strat_scalp.ScalpParams(
+            bb_period=getattr(config, "BB_PERIOD", 20),
+            bb_std=getattr(config, "BB_STD", 2.0),
+            rsi_period=getattr(config, "SCALP_RSI_PERIOD", 14),
+            rsi_oversold=getattr(config, "SCALP_RSI_OVERSOLD", 30.0),
+            rsi_overbought=getattr(config, "SCALP_RSI_OVERBOUGHT", 70.0),
+            atr_period=getattr(config, "ATR_PERIOD", 14),
+        )
+        return strat_scalp.latest_signal, params, params.warmup + 50
+    # default: trend
+    params = strat_trend.StrategyParams(
         fast_ema=config.FAST_EMA_PERIOD,
         slow_ema=config.SLOW_EMA_PERIOD,
         trend_ema=config.TREND_EMA_PERIOD,
@@ -55,6 +91,7 @@ def build_params() -> StrategyParams:
         rsi_short_min=config.RSI_SHORT_MIN,
         atr_period=config.ATR_PERIOD,
     )
+    return strat_trend.latest_signal, params, params.trend_ema + 50
 
 
 def opposite_open_positions(executor: OrderExecutor, action: str) -> list:
@@ -64,8 +101,7 @@ def opposite_open_positions(executor: OrderExecutor, action: str) -> list:
     return [p for p in executor.open_positions() if p.type == want_type]
 
 
-def run_cycle(executor: OrderExecutor, risk: RiskManager, params: StrategyParams,
-              spec, notifier: TelegramNotifier) -> None:
+def run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed) -> None:
     acct = mt5_client.account_info()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     risk.update_daily_guard(today, acct.equity)
@@ -78,12 +114,11 @@ def run_cycle(executor: OrderExecutor, risk: RiskManager, params: StrategyParams
             notifier.kill_switch(acct.equity)
         return
 
-    # 2. Signal (advanced strategy needs enough warmup for the trend EMA).
-    bars_needed = params.trend_ema + 50
+    # 2. Signal from the selected strategy.
     df = mt5_client.get_rates(config.SYMBOL, config.TIMEFRAME, bars_needed)
-    sig = latest_signal(df, params)
+    sig = signal_fn(df, params)
     log.info(
-        "Signal=%s | price=%.5f atr=%.5f fast=%.5f slow=%.5f trend=%.5f rsi=%.1f | %s",
+        "Signal=%s | price=%.5f atr=%.5f a=%.5f b=%.5f mid=%.5f rsi=%.1f | %s",
         sig.action, sig.price, sig.atr, sig.fast, sig.slow, sig.trend, sig.rsi, sig.reason,
     )
 
@@ -119,16 +154,27 @@ def run_cycle(executor: OrderExecutor, risk: RiskManager, params: StrategyParams
         return
 
     result = executor.open_market_order(sig.action, lot, sl_price, tp_price)
-    # Notify when an order was actually placed (or would be, in dry-run).
     if config.DRY_RUN or result is not None:
         risk.record_trade_opened()
         notifier.trade_opened(sig.action, config.SYMBOL, lot, sig.price, sl_price, tp_price)
 
 
 def main() -> None:
-    setup_logging()
-    log.info("Starting advanced bot | symbol=%s tf=%s dry_run=%s",
-             config.SYMBOL, config.TIMEFRAME, config.DRY_RUN)
+    global config
+    ap = argparse.ArgumentParser(description="Exness MT5 trading bot.")
+    ap.add_argument("--config", default="config.py",
+                    help="Path to config file (default: config.py).")
+    args = ap.parse_args()
+
+    config = load_config(args.config)
+
+    # Separate log file per config so two bots don't overwrite each other's log.
+    log_file = getattr(config, "LOG_FILE", "bot.log")
+    setup_logging(log_file)
+
+    strategy_name = getattr(config, "STRATEGY", "trend")
+    log.info("Starting bot | strategy=%s symbol=%s tf=%s dry_run=%s",
+             strategy_name, config.SYMBOL, config.TIMEFRAME, config.DRY_RUN)
 
     mt5_client.connect(
         login=config.MT5_LOGIN,
@@ -145,7 +191,7 @@ def main() -> None:
 
     try:
         spec = mt5_client.ensure_symbol(config.SYMBOL)
-        params = build_params()
+        signal_fn, params, bars_needed = build_strategy()
         risk = RiskManager(
             risk_per_trade_pct=config.RISK_PER_TRADE_PCT,
             atr_sl_multiplier=config.ATR_SL_MULTIPLIER,
@@ -166,7 +212,7 @@ def main() -> None:
 
         while True:
             try:
-                run_cycle(executor, risk, params, spec, notifier)
+                run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed)
             except Exception as exc:  # never let one bad cycle kill the bot
                 log.exception("Error during cycle - continuing after pause.")
                 notifier.error(str(exc))

@@ -27,7 +27,12 @@ SYMBOL = "XAUUSD"   # gold vs USD CFD on Exness. For BTC try "BTCUSD".
 TIMEFRAME = "M15"   # one of: M1, M5, M15, M30, H1, H4, D1
 
 # ---------------------------------------------------------------------------
-# STRATEGY (trend filter + EMA crossover + RSI confirmation)
+# STRATEGY SELECTION
+# ---------------------------------------------------------------------------
+STRATEGY = "trend"   # "trend" (EMA crossover + RSI) or "scalp" (Bollinger + RSI)
+
+# ---------------------------------------------------------------------------
+# TREND STRATEGY settings (used when STRATEGY = "trend")
 # ---------------------------------------------------------------------------
 FAST_EMA_PERIOD = 20    # fast EMA (bars)
 SLOW_EMA_PERIOD = 50    # slow EMA (bars)
@@ -36,6 +41,15 @@ RSI_PERIOD = 14
 RSI_LONG_MAX = 70.0     # don't BUY if RSI already >= this (overbought)
 RSI_SHORT_MIN = 30.0    # don't SELL if RSI already <= this (oversold)
 ATR_PERIOD = 14         # volatility measure used for stops & sizing
+
+# ---------------------------------------------------------------------------
+# SCALP STRATEGY settings (used when STRATEGY = "scalp")
+# ---------------------------------------------------------------------------
+BB_PERIOD = 20            # Bollinger Band moving-average length
+BB_STD = 2.0             # band width in standard deviations
+SCALP_RSI_PERIOD = 14
+SCALP_RSI_OVERSOLD = 30.0    # BUY only when RSI below this (price stretched down)
+SCALP_RSI_OVERBOUGHT = 70.0  # SELL only when RSI above this (stretched up)
 
 # ---------------------------------------------------------------------------
 # RISK MANAGEMENT  (all safety rails live here)
@@ -65,4 +79,5 @@ TELEGRAM_CHAT_ID = ""            # your chat id (see notifier.py setup notes)
 # ---------------------------------------------------------------------------
 POLL_SECONDS = 30           # how often the main loop checks the market
 MAGIC_NUMBER = 20260606     # identifies orders placed by THIS bot
+LOG_FILE = "bot.log"        # log filename (give each bot its own if running 2)
 DRY_RUN = True              # True = log decisions but DO NOT place real orders

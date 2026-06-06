@@ -39,6 +39,7 @@ class SymbolSpec(Protocol):
 class DailyGuard:
     day: str
     start_equity: float
+    trades_opened: int = 0   # how many trades this bot opened today
 
 
 class RiskManager:
@@ -51,6 +52,7 @@ class RiskManager:
         daily_max_loss_pct: float,
         min_lot: float,
         max_lot: float,
+        max_trades_per_day: int = 0,   # 0 = unlimited
     ):
         self.risk_per_trade_pct = risk_per_trade_pct
         self.atr_sl_multiplier = atr_sl_multiplier
@@ -59,13 +61,32 @@ class RiskManager:
         self.daily_max_loss_pct = daily_max_loss_pct
         self.min_lot = min_lot
         self.max_lot = max_lot
+        self.max_trades_per_day = max_trades_per_day
         self._guard: DailyGuard | None = None
 
     # -- daily kill switch ---------------------------------------------------
     def update_daily_guard(self, today: str, equity: float) -> None:
         if self._guard is None or self._guard.day != today:
-            self._guard = DailyGuard(day=today, start_equity=equity)
+            self._guard = DailyGuard(day=today, start_equity=equity, trades_opened=0)
             log.info("Daily guard set for %s | start equity=%.2f", today, equity)
+
+    # -- daily trade-count limit --------------------------------------------
+    def daily_trade_limit_reached(self) -> bool:
+        """True if we've already opened the max allowed trades today.
+        max_trades_per_day == 0 means unlimited."""
+        if self.max_trades_per_day <= 0 or self._guard is None:
+            return False
+        if self._guard.trades_opened >= self.max_trades_per_day:
+            log.info("Daily trade limit reached (%d/%d) - no more trades today.",
+                     self._guard.trades_opened, self.max_trades_per_day)
+            return True
+        return False
+
+    def record_trade_opened(self) -> None:
+        """Call this right after a trade is successfully opened."""
+        if self._guard is not None:
+            self._guard.trades_opened += 1
+            log.info("Trades opened today: %d", self._guard.trades_opened)
 
     def daily_loss_exceeded(self, equity: float) -> bool:
         if self._guard is None:

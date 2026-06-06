@@ -1,0 +1,11 @@
+# Backtesting / walk-forward (works on any OS):
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Equity-curve chart export (optional, used by backtest.py --chart):
+matplotlib>=3.7.0
+
+# Live trading only (Windows-only package; connects to the MT5 terminal):
+MetaTrader5==5.0.45
+
+# Telegram alerts use only the Python standard library - no package needed.

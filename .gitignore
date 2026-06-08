@@ -1,0 +1,18 @@
+# Local secrets - never commit real credentials
+config.py
+config.scalp.py
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+
+# Generated backtest artifacts
+*.png

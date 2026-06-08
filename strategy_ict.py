@@ -77,17 +77,27 @@ def find_swings(df: pd.DataFrame, lookback: int) -> tuple[list, list]:
     """
     Return (swing_highs, swing_lows) as lists of (index, price).
     A swing high has `lookback` strictly-lower highs on both sides; mirror for lows.
+
+    Vectorized with numpy so it stays fast when called many times in a backtest.
     """
-    highs, lows = [], []
-    h, l = df["high"].values, df["low"].values
-    n = len(df)
-    for i in range(lookback, n - lookback):
-        window_h = h[i - lookback:i + lookback + 1]
-        window_l = l[i - lookback:i + lookback + 1]
-        if h[i] == window_h.max() and (window_h == h[i]).sum() == 1:
-            highs.append((i, float(h[i])))
-        if l[i] == window_l.min() and (window_l == l[i]).sum() == 1:
-            lows.append((i, float(l[i])))
+    import numpy as np
+    h = df["high"].to_numpy()
+    l = df["low"].to_numpy()
+    n = len(h)
+    if n < 2 * lookback + 1:
+        return [], []
+    # Build sliding windows of width (2*lookback+1) via stride tricks.
+    w = 2 * lookback + 1
+    sh = np.lib.stride_tricks.sliding_window_view(h, w)
+    sl = np.lib.stride_tricks.sliding_window_view(l, w)
+    centre = lookback
+    # a swing high: centre is the unique max of its window
+    is_high = (sh[:, centre] == sh.max(axis=1)) & ((sh == sh[:, centre:centre + 1]).sum(axis=1) == 1)
+    is_low = (sl[:, centre] == sl.min(axis=1)) & ((sl == sl[:, centre:centre + 1]).sum(axis=1) == 1)
+    high_idx = np.nonzero(is_high)[0] + centre
+    low_idx = np.nonzero(is_low)[0] + centre
+    highs = [(int(i), float(h[i])) for i in high_idx]
+    lows = [(int(i), float(l[i])) for i in low_idx]
     return highs, lows
 
 
@@ -202,7 +212,7 @@ def evaluate_mtf(
             or len(df15) < p.fvg_lookback_15m + 5:
         return ICTSignal(HOLD, 0.0, 0.0, 0.0, "not enough data")
 
-    atr1 = float(ind.atr(df1["high"], df1["low"], df1["close"], p.atr_period).iloc[-1])
+    atr1 = ind.atr_last(df1["high"], df1["low"], df1["close"], p.atr_period)
     if pd.isna(atr1) or atr1 <= 0:
         return ICTSignal(HOLD, 0.0, 0.0, 0.0, "atr not ready")
     min_fvg = p.fvg_min_size_atr * atr1

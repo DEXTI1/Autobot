@@ -35,9 +35,27 @@ def run(df_base: pd.DataFrame, p: mm.MMXMParams, start_equity=10_000.0,
     in_pos, pos = False, None
     warm = max(p.sweep_lookback, 40) + 5
 
-    for i in range(warm, len(df_base)):
+    # PERFORMANCE: only the most recent N bars of each timeframe matter, so we
+    # use trailing windows instead of re-slicing the whole growing history every
+    # bar (that was O(n^2) and hung on 100k bars). These caps are generous.
+    base_win = max(p.sweep_lookback + p.swing_lookback + 10, 120)
+    htf_win = p.ob_lookback + 10
+    h4_win = 60
+
+    # numpy arrays of higher-TF timestamps for fast searchsorted slicing.
+    t30_ns = t30.values.astype("datetime64[ns]")
+    t4h_ns = t4h.values.astype("datetime64[ns]")
+
+    n = len(df_base)
+    next_report = 10
+    for i in range(warm, n):
         bar = df_base.iloc[i]
-        now = bar["time"].to_pydatetime()
+
+        # progress indicator so you can see it working on big files
+        pct = int((i - warm) / max(1, n - warm) * 100)
+        if pct >= next_report:
+            print(f"  ...backtesting {pct}%", flush=True)
+            next_report += 10
 
         if in_pos:
             hit_sl = (pos["dir"] == 1 and bar["low"] <= pos["sl"]) or \
@@ -61,11 +79,18 @@ def run(df_base: pd.DataFrame, p: mm.MMXMParams, start_equity=10_000.0,
             continue
         curve.append(equity)
 
-        d_base = df_base.iloc[:i + 1]
-        d30 = df30[(t30 <= bar["time"]).values]
-        d4h = df4h[(t4h <= bar["time"]).values]
-        if len(d30) < p.ob_lookback + 5 or len(d4h) < 10:
+        bar_t = bar["time"].to_datetime64()
+        now = bar["time"].to_pydatetime()
+
+        # trailing base-TF window
+        d_base = df_base.iloc[max(0, i - base_win):i + 1]
+        # higher-TF: index of last closed bar at/<= now, then take a trailing slice
+        k30 = int(np.searchsorted(t30_ns, bar_t, side="right"))
+        k4h = int(np.searchsorted(t4h_ns, bar_t, side="right"))
+        if k30 < p.ob_lookback + 5 or k4h < 10:
             continue
+        d30 = df30.iloc[max(0, k30 - htf_win):k30]
+        d4h = df4h.iloc[max(0, k4h - h4_win):k4h]
 
         sig = mm.evaluate_mmxm(d30.reset_index(drop=True), d_base.reset_index(drop=True),
                                d4h.reset_index(drop=True), p, now=now)
@@ -102,10 +127,19 @@ def main():
     ap.add_argument("--equity", type=float, default=10_000.0)
     ap.add_argument("--risk", type=float, default=1.0)
     ap.add_argument("--spread", type=float, default=0.30)
+    ap.add_argument("--resample", default="5min",
+                    help="Resample the base data to this TF before testing "
+                         "(default 5min - fast and correct for MMXM). Use 'none' "
+                         "to run on the raw timeframe (slow on 100k+ 1m bars).")
     args = ap.parse_args()
 
-    df = load_yf_1m(args.csv)  # generic OHLC loader (yfinance format)
-    print(f"Loaded {len(df)} base bars | {df['time'].min()} -> {df['time'].max()}")
+    df = load_yf_1m(args.csv)  # auto-detects yfinance / MT5 format
+    if args.resample.lower() != "none":
+        df = resample(df, args.resample)
+        print(f"Loaded & resampled to {args.resample}: {len(df)} bars "
+              f"| {df['time'].min()} -> {df['time'].max()}")
+    else:
+        print(f"Loaded {len(df)} base bars | {df['time'].min()} -> {df['time'].max()}")
     res = run(df, mm.MMXMParams(), start_equity=args.equity,
               risk_pct=args.risk, spread=args.spread)
     print("=" * 56)

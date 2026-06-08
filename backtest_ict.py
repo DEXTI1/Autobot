@@ -34,12 +34,23 @@ def load_yf_1m(path: str) -> pd.DataFrame:
       3. MT5 export WITH a header row (DATE,TIME,OPEN,... or Date,Open,...)
     Returns columns: time, open, high, low, close (UTC).
     """
-    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+    # MT5 on Windows often saves CSVs as UTF-16 (with a BOM). Auto-detect the
+    # encoding by sniffing the first bytes, so UTF-8 and UTF-16 both work.
+    with open(path, "rb") as fb:
+        head = fb.read(4)
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        encoding = "utf-16"
+    elif head[:3] == b"\xef\xbb\xbf":
+        encoding = "utf-8-sig"
+    else:
+        encoding = "utf-8"
+
+    with open(path, "r", encoding=encoding, errors="ignore") as fh:
         first = fh.readline().strip()
 
     # --- yfinance? first token is the literal word "Price" ---
     if first.lower().startswith("price,"):
-        df = pd.read_csv(path, skiprows=[1, 2])
+        df = pd.read_csv(path, skiprows=[1, 2], encoding=encoding)
         df = df.rename(columns={df.columns[0]: "time"})
         df.columns = [str(c).lower() for c in df.columns]
     else:
@@ -48,7 +59,7 @@ def load_yf_1m(path: str) -> pd.DataFrame:
         sep = "\t" if "\t" in first else ","
         if looks_like_data:
             # no header - assign by position
-            df = pd.read_csv(path, header=None, sep=sep)
+            df = pd.read_csv(path, header=None, sep=sep, encoding=encoding)
             ncol = df.shape[1]
             # datetime may be ONE column ("2026.02.24 20:41") or TWO (date,time)
             c0 = str(df.iloc[0, 0])
@@ -60,7 +71,7 @@ def load_yf_1m(path: str) -> pd.DataFrame:
                 df.columns = names[:ncol]
                 df["time"] = df["date"].astype(str) + " " + df["time2"].astype(str)
         else:
-            df = pd.read_csv(path, sep=sep)
+            df = pd.read_csv(path, sep=sep, encoding=encoding)
             df.columns = [str(c).lower().strip() for c in df.columns]
             # MT5 headered files often split DATE and TIME
             if "date" in df.columns and "time" in df.columns:

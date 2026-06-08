@@ -53,6 +53,10 @@ class RiskManager:
         min_lot: float,
         max_lot: float,
         max_trades_per_day: int = 0,   # 0 = unlimited
+        use_fixed_pips: bool = False,  # if True, use fixed SL/TP point distances
+        sl_points: float = 0.0,        # stop distance in POINTS (fixed-pip mode)
+        tp_points: float = 0.0,        # target distance in POINTS (fixed-pip mode)
+        point: float = 0.01,          # symbol point size (price per 1 point)
     ):
         self.risk_per_trade_pct = risk_per_trade_pct
         self.atr_sl_multiplier = atr_sl_multiplier
@@ -62,6 +66,10 @@ class RiskManager:
         self.min_lot = min_lot
         self.max_lot = max_lot
         self.max_trades_per_day = max_trades_per_day
+        self.use_fixed_pips = use_fixed_pips
+        self.sl_points = sl_points
+        self.tp_points = tp_points
+        self.point = point
         self._guard: DailyGuard | None = None
 
     # -- daily kill switch ---------------------------------------------------
@@ -107,16 +115,23 @@ class RiskManager:
 
     # -- stop distance & SL/TP prices ---------------------------------------
     def stop_distance(self, atr_value: float) -> float:
-        """Stop distance in PRICE units = ATR * multiplier."""
+        """Stop distance in PRICE units. Fixed-pip mode uses sl_points*point;
+        otherwise ATR * multiplier."""
+        if self.use_fixed_pips and self.sl_points > 0:
+            return self.sl_points * self.point
         return atr_value * self.atr_sl_multiplier
 
     def sl_tp_prices(self, action: str, entry_price: float, atr_value: float) -> tuple[float, float]:
         """
-        Volatility-scaled SL/TP. Stop = atr*mult away; TP = stop*reward_risk away.
+        SL/TP prices. In fixed-pip mode, SL=sl_points and TP=tp_points (your
+        30-40 pip targets). Otherwise stop = atr*mult, TP = stop*reward_risk.
         Returns (sl_price, tp_price).
         """
         sl_dist = self.stop_distance(atr_value)
-        tp_dist = sl_dist * self.reward_risk_ratio
+        if self.use_fixed_pips and self.tp_points > 0:
+            tp_dist = self.tp_points * self.point
+        else:
+            tp_dist = sl_dist * self.reward_risk_ratio
         if action == "BUY":
             return entry_price - sl_dist, entry_price + tp_dist
         return entry_price + sl_dist, entry_price - tp_dist

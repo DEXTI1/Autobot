@@ -25,18 +25,59 @@ import strategy_ict as ict
 
 
 def load_yf_1m(path: str) -> pd.DataFrame:
-    """Load a yfinance CSV (multi-row header) into time/open/high/low/close."""
-    raw = pd.read_csv(path)
-    # yfinance writes 3 header rows: Price/Ticker/Date. Detect & skip.
-    # The first column holds the datetime once we drop the ticker rows.
-    # Re-read robustly:
-    df = pd.read_csv(path, skiprows=[1, 2])
-    df = df.rename(columns={df.columns[0]: "time"})
-    df.columns = [str(c).lower() for c in df.columns]
-    df["time"] = pd.to_datetime(df["time"], utc=True)
+    """
+    Load OHLC data, auto-detecting the format. Supports:
+      1. yfinance CSV (3-row header: Price/Ticker/Datetime)
+      2. MT5 export with NO header, e.g.:
+            2026.02.24 20:41,5170.17,5170.81,5169.66,5169.99,114,0
+         columns = datetime, open, high, low, close, tickvol, [vol/spread]
+      3. MT5 export WITH a header row (DATE,TIME,OPEN,... or Date,Open,...)
+    Returns columns: time, open, high, low, close (UTC).
+    """
+    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+        first = fh.readline().strip()
+
+    # --- yfinance? first token is the literal word "Price" ---
+    if first.lower().startswith("price,"):
+        df = pd.read_csv(path, skiprows=[1, 2])
+        df = df.rename(columns={df.columns[0]: "time"})
+        df.columns = [str(c).lower() for c in df.columns]
+    else:
+        # MT5: detect whether the first line is a header or data.
+        looks_like_data = first[:4].isdigit()  # starts with a year like 2026
+        sep = "\t" if "\t" in first else ","
+        if looks_like_data:
+            # no header - assign by position
+            df = pd.read_csv(path, header=None, sep=sep)
+            ncol = df.shape[1]
+            # datetime may be ONE column ("2026.02.24 20:41") or TWO (date,time)
+            c0 = str(df.iloc[0, 0])
+            if " " in c0 or ":" in c0:  # single datetime column
+                names = ["time", "open", "high", "low", "close", "tickvol", "vol", "spread"]
+                df.columns = names[:ncol]
+            else:  # separate date and time columns
+                names = ["date", "time2", "open", "high", "low", "close", "tickvol", "vol", "spread"]
+                df.columns = names[:ncol]
+                df["time"] = df["date"].astype(str) + " " + df["time2"].astype(str)
+        else:
+            df = pd.read_csv(path, sep=sep)
+            df.columns = [str(c).lower().strip() for c in df.columns]
+            # MT5 headered files often split DATE and TIME
+            if "date" in df.columns and "time" in df.columns:
+                df["time"] = df["date"].astype(str) + " " + df["time"].astype(str)
+            elif "<date>" in df.columns:  # MetaTrader '<DATE>\t<TIME>...' style
+                df["time"] = df["<date>"].astype(str) + " " + df.get("<time>", "").astype(str)
+                df = df.rename(columns={"<open>": "open", "<high>": "high",
+                                        "<low>": "low", "<close>": "close"})
+
+    # MT5 uses dots in dates (2026.02.24); normalise to dashes for parsing.
+    df["time"] = (df["time"].astype(str)
+                  .str.replace(".", "-", regex=False)
+                  .str.replace("--", "-", regex=False))
+    df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+    df = df.dropna(subset=["time", "open", "high", "low", "close"]).reset_index(drop=True)
     return df[["time", "open", "high", "low", "close"]]
 
 

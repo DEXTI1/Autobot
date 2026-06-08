@@ -34,6 +34,7 @@ import mt5_client
 import strategy as strat_trend
 import strategy_scalp as strat_scalp
 import strategy_scalp_pro as strat_scalp_pro
+import strategy_ict as strat_ict
 from executor import OrderExecutor
 from news_filter import NewsSessionFilter
 from notifier import TelegramNotifier
@@ -73,6 +74,22 @@ def build_strategy():
     All strategies expose latest_signal(df, params[, point]).
     """
     name = getattr(config, "STRATEGY", "trend").lower()
+    if name == "ict":
+        params = strat_ict.ICTParams(
+            ny_start_hour=getattr(config, "NY_START_HOUR", 13),
+            ny_start_min=getattr(config, "NY_START_MIN", 30),
+            ny_end_hour=getattr(config, "NY_END_HOUR", 16),
+            ny_end_min=getattr(config, "NY_END_MIN", 0),
+            swing_lookback=getattr(config, "ICT_SWING_LOOKBACK", 3),
+            fvg_min_size_atr=getattr(config, "ICT_FVG_MIN_SIZE_ATR", 0.10),
+            sweep_lookback_5m=getattr(config, "ICT_SWEEP_LOOKBACK_5M", 20),
+            fvg_lookback_15m=getattr(config, "ICT_FVG_LOOKBACK_15M", 20),
+            ifvg_lookback_1m=getattr(config, "ICT_IFVG_LOOKBACK_1M", 30),
+            atr_period=getattr(config, "ATR_PERIOD", 14),
+            reward_risk=getattr(config, "ICT_REWARD_RISK", 1.0),
+            stop_buffer_atr=getattr(config, "ICT_STOP_BUFFER_ATR", 0.25),
+        )
+        return ("ict", params, 0)
     if name == "scalp_pro":
         params = strat_scalp_pro.ScalpProParams(
             ema_fast=getattr(config, "PRO_EMA_FAST", 9),
@@ -127,7 +144,59 @@ def opposite_open_positions(executor: OrderExecutor, action: str) -> list:
     return [p for p in executor.open_positions() if p.type == want_type]
 
 
+def run_ict_cycle(executor, risk, params, spec, notifier) -> None:
+    """
+    Dedicated cycle for the ICT multi-timeframe strategy. It reads 15m/5m/1m,
+    and the strategy returns ABSOLUTE sl/tp prices (stop under the swing, TP at RR).
+    """
+    acct = mt5_client.account_info()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    risk.update_daily_guard(today, acct.equity)
+
+    if risk.daily_loss_exceeded(acct.equity):
+        if executor.open_positions():
+            log.warning("Kill switch: closing all bot positions.")
+            executor.close_all()
+            notifier.kill_switch(acct.equity)
+        return
+
+    # Pull the three timeframes.
+    df15 = mt5_client.get_rates(config.SYMBOL, "M15", params.fvg_lookback_15m + 50)
+    df5 = mt5_client.get_rates(config.SYMBOL, "M5", params.sweep_lookback_5m + 50)
+    df1 = mt5_client.get_rates(config.SYMBOL, "M1", params.ifvg_lookback_1m + 50)
+
+    ict = strat_ict.evaluate_mtf(df15, df5, df1, params)
+    log.info("ICT signal=%s | price=%.5f sl=%.5f tp=%.5f | %s",
+             ict.action, ict.price, ict.sl_price, ict.tp_price, ict.reason)
+
+    if ict.action == HOLD:
+        return
+    if risk.daily_trade_limit_reached():
+        return
+    if not risk.can_open_new_position(len(executor.open_positions())):
+        return
+
+    # Position size from the actual stop distance (entry to swing-based SL).
+    stop_dist = abs(ict.price - ict.sl_price)
+    if stop_dist <= 0:
+        log.warning("ICT: non-positive stop distance; skipping.")
+        return
+    lot = risk.calc_lot_size(acct.equity, stop_dist, spec)
+    if lot <= 0:
+        log.warning("ICT: lot size 0; skipping.")
+        return
+
+    result = executor.open_market_order(ict.action, lot, ict.sl_price, ict.tp_price)
+    if config.DRY_RUN or result is not None:
+        risk.record_trade_opened()
+        notifier.trade_opened(ict.action, config.SYMBOL, lot, ict.price, ict.sl_price, ict.tp_price)
+
+
 def run_cycle(executor, risk, params, spec, notifier, strat_name, bars_needed, nfilter) -> None:
+    if strat_name == "ict":
+        run_ict_cycle(executor, risk, params, spec, notifier)
+        return
+
     acct = mt5_client.account_info()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     risk.update_daily_guard(today, acct.equity)

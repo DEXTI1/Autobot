@@ -74,3 +74,28 @@ def macd(
     signal_line = ema(macd_line, signal)
     hist = macd_line - signal_line
     return pd.DataFrame({"macd": macd_line, "signal": signal_line, "hist": hist})
+
+
+def session_vwap(df: pd.DataFrame) -> pd.Series:
+    """
+    Volume-Weighted Average Price, reset each calendar day (a "session VWAP").
+
+    VWAP is the average price weighted by volume - widely used by intraday
+    traders as the day's "fair value". Price above VWAP = buyers in control;
+    below = sellers. Requires columns: time, high, low, close, tick_volume
+    (falls back to a flat volume of 1 if no volume column is present, which
+    turns this into a simple typical-price average).
+    """
+    typical = (df["high"] + df["low"] + df["close"]) / 3.0
+    if "tick_volume" in df.columns:
+        vol = df["tick_volume"].astype(float).clip(lower=1.0)
+    elif "volume" in df.columns:
+        vol = df["volume"].astype(float).clip(lower=1.0)
+    else:
+        vol = pd.Series(1.0, index=df.index)
+
+    day = pd.to_datetime(df["time"]).dt.date
+    pv = typical * vol
+    cum_pv = pv.groupby(day).cumsum()
+    cum_vol = vol.groupby(day).cumsum()
+    return cum_pv / cum_vol

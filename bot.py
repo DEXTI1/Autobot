@@ -33,7 +33,9 @@ from datetime import datetime, timezone
 import mt5_client
 import strategy as strat_trend
 import strategy_scalp as strat_scalp
+import strategy_scalp_pro as strat_scalp_pro
 from executor import OrderExecutor
+from news_filter import NewsSessionFilter
 from notifier import TelegramNotifier
 from risk import RiskManager
 from strategy import BUY, SELL, HOLD
@@ -68,9 +70,22 @@ def load_config(path: str):
 def build_strategy():
     """
     Return (signal_fn, params, bars_needed) for the configured strategy.
-    Both strategies expose latest_signal(df, params) with the same signature.
+    All strategies expose latest_signal(df, params[, point]).
     """
     name = getattr(config, "STRATEGY", "trend").lower()
+    if name == "scalp_pro":
+        params = strat_scalp_pro.ScalpProParams(
+            ema_fast=getattr(config, "PRO_EMA_FAST", 9),
+            ema_slow=getattr(config, "PRO_EMA_SLOW", 21),
+            rsi_period=getattr(config, "PRO_RSI_PERIOD", 14),
+            rsi_floor=getattr(config, "PRO_RSI_FLOOR", 45.0),
+            rsi_ceiling=getattr(config, "PRO_RSI_CEILING", 68.0),
+            atr_period=getattr(config, "ATR_PERIOD", 14),
+            min_atr_points=getattr(config, "PRO_MIN_ATR_POINTS", 80.0),
+            pullback_atr=getattr(config, "PRO_PULLBACK_ATR", 0.6),
+            use_vwap=getattr(config, "PRO_USE_VWAP", True),
+        )
+        return ("scalp_pro", params, params.warmup + 60)
     if name == "scalp":
         params = strat_scalp.ScalpParams(
             bb_period=getattr(config, "BB_PERIOD", 20),
@@ -82,7 +97,7 @@ def build_strategy():
             band_touch_frac=getattr(config, "SCALP_BAND_TOUCH_FRAC", 0.85),
             require_both=getattr(config, "SCALP_REQUIRE_BOTH", False),
         )
-        return strat_scalp.latest_signal, params, params.warmup + 50
+        return ("scalp", params, params.warmup + 50)
     # default: trend
     params = strat_trend.StrategyParams(
         fast_ema=config.FAST_EMA_PERIOD,
@@ -93,7 +108,16 @@ def build_strategy():
         rsi_short_min=config.RSI_SHORT_MIN,
         atr_period=config.ATR_PERIOD,
     )
-    return strat_trend.latest_signal, params, params.trend_ema + 50
+    return ("trend", params, params.trend_ema + 50)
+
+
+def compute_signal(strat_name, params, df, point):
+    """Dispatch to the right strategy's latest_signal."""
+    if strat_name == "scalp_pro":
+        return strat_scalp_pro.latest_signal(df, params, point)
+    if strat_name == "scalp":
+        return strat_scalp.latest_signal(df, params)
+    return strat_trend.latest_signal(df, params)
 
 
 def opposite_open_positions(executor: OrderExecutor, action: str) -> list:
@@ -103,7 +127,7 @@ def opposite_open_positions(executor: OrderExecutor, action: str) -> list:
     return [p for p in executor.open_positions() if p.type == want_type]
 
 
-def run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed) -> None:
+def run_cycle(executor, risk, params, spec, notifier, strat_name, bars_needed, nfilter) -> None:
     acct = mt5_client.account_info()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     risk.update_daily_guard(today, acct.equity)
@@ -118,7 +142,8 @@ def run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed) ->
 
     # 2. Signal from the selected strategy.
     df = mt5_client.get_rates(config.SYMBOL, config.TIMEFRAME, bars_needed)
-    sig = signal_fn(df, params)
+    point = getattr(spec, "point", 0.01)
+    sig = compute_signal(strat_name, params, df, point)
     log.info(
         "Signal=%s | price=%.5f atr=%.5f a=%.5f b=%.5f mid=%.5f rsi=%.1f | %s",
         sig.action, sig.price, sig.atr, sig.fast, sig.slow, sig.trend, sig.rsi, sig.reason,
@@ -130,6 +155,13 @@ def run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed) ->
 
     if sig.action == HOLD:
         return
+
+    # 3b. News / session filter - skip entries in bad windows.
+    if nfilter is not None:
+        allowed, reason = nfilter.can_trade()
+        if not allowed:
+            log.info("Entry blocked: %s.", reason)
+            return
 
     # 4. On a flip, exit positions facing the wrong way first.
     against = opposite_open_positions(executor, sig.action)
@@ -144,7 +176,7 @@ def run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed) ->
         return
     if not risk.can_open_new_position(len(executor.open_positions())):
         return
-    if sig.atr <= 0:
+    if sig.atr <= 0 and not risk.use_fixed_pips:
         log.warning("ATR not ready; skipping entry.")
         return
 
@@ -193,7 +225,8 @@ def main() -> None:
 
     try:
         spec = mt5_client.ensure_symbol(config.SYMBOL)
-        signal_fn, params, bars_needed = build_strategy()
+        strat_name, params, bars_needed = build_strategy()
+        point = getattr(spec, "point", 0.01)
         risk = RiskManager(
             risk_per_trade_pct=config.RISK_PER_TRADE_PCT,
             atr_sl_multiplier=config.ATR_SL_MULTIPLIER,
@@ -203,6 +236,10 @@ def main() -> None:
             min_lot=config.MIN_LOT,
             max_lot=config.MAX_LOT,
             max_trades_per_day=getattr(config, "MAX_TRADES_PER_DAY", 0),
+            use_fixed_pips=getattr(config, "USE_FIXED_PIPS", False),
+            sl_points=getattr(config, "SL_POINTS", 0.0),
+            tp_points=getattr(config, "TP_POINTS", 0.0),
+            point=point,
         )
         executor = OrderExecutor(
             symbol=config.SYMBOL,
@@ -210,11 +247,25 @@ def main() -> None:
             dry_run=config.DRY_RUN,
         )
 
+        # News + session filter (optional; on by default for scalp_pro).
+        nfilter = None
+        if getattr(config, "USE_NEWS_FILTER", False) or getattr(config, "USE_SESSION_FILTER", False):
+            nfilter = NewsSessionFilter(
+                use_news_filter=getattr(config, "USE_NEWS_FILTER", True),
+                minutes_before=getattr(config, "NEWS_MINUTES_BEFORE", 15),
+                minutes_after=getattr(config, "NEWS_MINUTES_AFTER", 15),
+                min_impact=getattr(config, "NEWS_MIN_IMPACT", 3),
+                manual_events=getattr(config, "NEWS_EVENTS", None),
+                use_session_filter=getattr(config, "USE_SESSION_FILTER", True),
+                session_start_hour=getattr(config, "SESSION_START_HOUR", 7),
+                session_end_hour=getattr(config, "SESSION_END_HOUR", 20),
+            )
+
         notifier.startup(config.SYMBOL, config.TIMEFRAME, config.DRY_RUN)
 
         while True:
             try:
-                run_cycle(executor, risk, params, spec, notifier, signal_fn, bars_needed)
+                run_cycle(executor, risk, params, spec, notifier, strat_name, bars_needed, nfilter)
             except Exception as exc:  # never let one bad cycle kill the bot
                 log.exception("Error during cycle - continuing after pause.")
                 notifier.error(str(exc))

@@ -114,6 +114,7 @@ class Backtester:
         use_trailing: bool = True,
         trail_atr_mult: float = 2.0,
         periods_per_year: int = 35_040,   # M15 bars/year (~96*365); override per TF
+        strategy_module=strat,            # pluggable strategy (trend/scalp/scalp_pro)
     ):
         self.spec = spec
         self.risk = risk
@@ -122,6 +123,14 @@ class Backtester:
         self.use_trailing = use_trailing
         self.trail_atr_mult = trail_atr_mult
         self.periods_per_year = periods_per_year
+        self.strat = strategy_module
+
+    def _evaluate(self, df, i):
+        """Call the strategy's evaluate, passing point if it accepts one."""
+        try:
+            return self.strat.evaluate(df, i, self.params, self.spec.point)
+        except TypeError:
+            return self.strat.evaluate(df, i, self.params)
 
     # -- money helpers -------------------------------------------------------
     def _pnl(self, trade: Trade, exit_price: float) -> float:
@@ -141,7 +150,7 @@ class Backtester:
 
     # -- main loop -----------------------------------------------------------
     def run(self, df: pd.DataFrame) -> BacktestResult:
-        df = strat.add_indicators(df, self.params).reset_index(drop=True)
+        df = self.strat.add_indicators(df, self.params).reset_index(drop=True)
         n = len(df)
 
         balance = self.start_equity
@@ -225,7 +234,7 @@ class Backtester:
                     total_costs += swap
 
             # 4) Generate signal on this CLOSED bar -> act next bar.
-            sig = strat.evaluate(df, i, self.params)
+            sig = self._evaluate(df, i)
             if sig.action in (BUY, SELL):
                 # If opposing position open, close it at next open via flip logic:
                 if position is not None and (

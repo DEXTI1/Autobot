@@ -60,6 +60,31 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
     return true_range.ewm(alpha=1.0 / period, adjust=False).mean()
 
 
+def atr_last(high, low, close, period: int = 14) -> float:
+    """
+    Fast ATR of the LAST bar only, using numpy (no pandas EWM overhead).
+    Used in hot backtest loops where we just need the latest value.
+    """
+    import numpy as np
+    h = np.asarray(high, dtype=float)
+    l = np.asarray(low, dtype=float)
+    c = np.asarray(close, dtype=float)
+    if len(h) < period + 1:
+        return float("nan")
+    prev_c = c[:-1]
+    tr = np.maximum.reduce([
+        h[1:] - l[1:],
+        np.abs(h[1:] - prev_c),
+        np.abs(l[1:] - prev_c),
+    ])
+    # Wilder smoothing via simple recursive pass on the true-range series.
+    alpha = 1.0 / period
+    a = tr[0]
+    for x in tr[1:]:
+        a = a + alpha * (x - a)
+    return float(a)
+
+
 def macd(
     series: pd.Series,
     fast: int = 12,

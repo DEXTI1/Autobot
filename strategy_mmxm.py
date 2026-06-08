@@ -206,8 +206,8 @@ def evaluate_mmxm(
             or len(df_4h) < 10:
         return MMXMSignal(HOLD, 0.0, 0.0, 0.0, "not enough data")
 
-    atr_htf = float(ind.atr(df_htf["high"], df_htf["low"], df_htf["close"], p.atr_period).iloc[-1])
-    atr_e = float(ind.atr(df_entry["high"], df_entry["low"], df_entry["close"], p.atr_period).iloc[-1])
+    atr_htf = ind.atr_last(df_htf["high"], df_htf["low"], df_htf["close"], p.atr_period)
+    atr_e = ind.atr_last(df_entry["high"], df_entry["low"], df_entry["close"], p.atr_period)
     if pd.isna(atr_htf) or pd.isna(atr_e) or atr_htf <= 0 or atr_e <= 0:
         return MMXMSignal(HOLD, 0.0, 0.0, 0.0, "atr not ready")
 

@@ -57,6 +57,9 @@ class RiskManager:
         sl_points: float = 0.0,        # stop distance in POINTS (fixed-pip mode)
         tp_points: float = 0.0,        # target distance in POINTS (fixed-pip mode)
         point: float = 0.01,          # symbol point size (price per 1 point)
+        use_price_dist: bool = False,  # if True, SL/TP given DIRECTLY in price $
+        sl_price: float = 0.0,         # stop distance in PRICE units (e.g. 3.0 = $3 on gold)
+        tp_price: float = 0.0,         # target distance in PRICE units (e.g. 4.0 = $4 on gold)
     ):
         self.risk_per_trade_pct = risk_per_trade_pct
         self.atr_sl_multiplier = atr_sl_multiplier
@@ -70,6 +73,9 @@ class RiskManager:
         self.sl_points = sl_points
         self.tp_points = tp_points
         self.point = point
+        self.use_price_dist = use_price_dist
+        self.sl_price = sl_price
+        self.tp_price = tp_price
         self._guard: DailyGuard | None = None
 
     # -- daily kill switch ---------------------------------------------------
@@ -115,20 +121,26 @@ class RiskManager:
 
     # -- stop distance & SL/TP prices ---------------------------------------
     def stop_distance(self, atr_value: float) -> float:
-        """Stop distance in PRICE units. Fixed-pip mode uses sl_points*point;
-        otherwise ATR * multiplier."""
+        """Stop distance in PRICE units.
+        Priority: price-distance mode > fixed-pip mode > ATR-based."""
+        if self.use_price_dist and self.sl_price > 0:
+            return self.sl_price
         if self.use_fixed_pips and self.sl_points > 0:
             return self.sl_points * self.point
         return atr_value * self.atr_sl_multiplier
 
     def sl_tp_prices(self, action: str, entry_price: float, atr_value: float) -> tuple[float, float]:
         """
-        SL/TP prices. In fixed-pip mode, SL=sl_points and TP=tp_points (your
-        30-40 pip targets). Otherwise stop = atr*mult, TP = stop*reward_risk.
+        SL/TP prices.
+          - price-distance mode: SL/TP are exact price moves (e.g. 3.0 = $3 on gold)
+          - fixed-pip mode: SL=sl_points*point, TP=tp_points*point
+          - otherwise: stop = atr*mult, TP = stop*reward_risk
         Returns (sl_price, tp_price).
         """
         sl_dist = self.stop_distance(atr_value)
-        if self.use_fixed_pips and self.tp_points > 0:
+        if self.use_price_dist and self.tp_price > 0:
+            tp_dist = self.tp_price
+        elif self.use_fixed_pips and self.tp_points > 0:
             tp_dist = self.tp_points * self.point
         else:
             tp_dist = sl_dist * self.reward_risk_ratio

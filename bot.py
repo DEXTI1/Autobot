@@ -240,6 +240,9 @@ def main() -> None:
             sl_points=getattr(config, "SL_POINTS", 0.0),
             tp_points=getattr(config, "TP_POINTS", 0.0),
             point=point,
+            use_price_dist=getattr(config, "USE_PRICE_DIST", False),
+            sl_price=getattr(config, "SL_PRICE", 0.0),
+            tp_price=getattr(config, "TP_PRICE", 0.0),
         )
         executor = OrderExecutor(
             symbol=config.SYMBOL,

@@ -46,12 +46,19 @@ RSI_PERIOD = 14
 RSI_LONG_MAX = 70.0
 RSI_SHORT_MIN = 30.0
 
-# ---- FIXED-PIP TARGETS (your 30-40 pip request) ----
-# For gold on Exness, 1 "pip" = 10 points (point=0.01), so:
-#   30 pips = 300 points, 40 pips = 400 points.
-USE_FIXED_PIPS = True
-SL_POINTS = 300.0   # stop  = 30 pips
-TP_POINTS = 400.0   # target = 40 pips  (R:R ~ 1.33)
+# ---- FIXED TARGETS ----
+# Gold "pips" are confusing and depend on the broker's point size, which can
+# make point-based stops come out wrong. The CLEAREST way is to set the stop
+# and target DIRECTLY as a price move in dollars:
+#   on gold, price 4030 -> 4033 is a $3.00 move = "30 pips" in common terms.
+USE_PRICE_DIST = True
+SL_PRICE = 3.0   # stop  = $3.00 move  (e.g. 4030.00 -> 4027.00)
+TP_PRICE = 4.0   # target = $4.00 move  (e.g. 4030.00 -> 4034.00)   R:R ~ 1.33
+
+# (Old point-based mode - left off. 1 "pip" gold = 10 points, point=0.01.)
+USE_FIXED_PIPS = False
+SL_POINTS = 300.0
+TP_POINTS = 400.0
 
 # ---- RISK MANAGEMENT ----
 RISK_PER_TRADE_PCT = 1.0    # % of equity risked per trade

@@ -129,6 +129,31 @@ class OrderExecutor:
         result = mt5.order_send(request)
         self._log_result("MODIFY_SL", position.volume, result)
 
+    def update_breakeven(self, r_distance: float, trigger_r: float = 1.0,
+                         lock_r: float = 0.05) -> None:
+        """
+        Move the stop to (just past) entry once a position is +trig_r * R in
+        profit, so a winner can't turn into a full loss. R is the initial risk
+        distance in price (atr * sl_multiplier or the fixed stop distance).
+        Only ever moves the stop in the favorable direction.
+        """
+        if r_distance <= 0:
+            return
+        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return
+        trigger = trigger_r * r_distance
+        for pos in self.open_positions():
+            entry = pos.price_open
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                be = entry + lock_r * r_distance
+                if (tick.bid - entry) >= trigger and pos.sl < be:
+                    self.modify_sl(pos, be)
+            else:  # SELL
+                be = entry - lock_r * r_distance
+                if (entry - tick.ask) >= trigger and (pos.sl == 0.0 or pos.sl > be):
+                    self.modify_sl(pos, be)
+
     def update_trailing_stops(self, atr_value: float, trail_atr_mult: float) -> None:
         """
         Tighten the stop on each open position using ATR * multiplier from the

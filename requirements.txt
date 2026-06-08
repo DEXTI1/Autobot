@@ -2,6 +2,9 @@
 pandas>=2.0.0
 numpy>=1.24.0
 
+# Optional: fetch historical data for the USTEC backtests (any OS):
+yfinance>=0.2.40
+
 # Equity-curve chart export (optional, used by backtest.py --chart):
 matplotlib>=3.7.0
 

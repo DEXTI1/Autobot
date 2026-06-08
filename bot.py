@@ -1,9 +1,13 @@
 """
 Main entry point for the Exness MT5 trading bot.
 
-Supports TWO strategies, chosen via the `STRATEGY` setting in the config:
-    - "trend"  -> strategy.py        (trend-following EMA crossover + RSI)
-    - "scalp"  -> strategy_scalp.py  (Bollinger Band + RSI mean-reversion)
+Supports several strategies, chosen via the `STRATEGY` setting in the config:
+    - "trend"        -> strategy.py            (EMA crossover + RSI)
+    - "scalp"        -> strategy_scalp.py      (Bollinger Band + RSI)
+    - "scalp_pro"    -> strategy_scalp_pro.py  (VWAP + EMA momentum pullback)
+    - "scalp_pro_v2" -> strategy_scalp_pro_v2.py (scalp_pro + session/trend/ATR
+                        filters + breakeven + daily kill-switch; best for USTEC)
+    - "ict"          -> strategy_ict.py        (NY-killzone FVG/sweep)
 
 You can run a different config file with --config, which lets you run two bots
 side by side (e.g. trend on one account, scalp on another):
@@ -34,6 +38,7 @@ import mt5_client
 import strategy as strat_trend
 import strategy_scalp as strat_scalp
 import strategy_scalp_pro as strat_scalp_pro
+import strategy_scalp_pro_v2 as strat_scalp_pro_v2
 import strategy_ict as strat_ict
 from executor import OrderExecutor
 from news_filter import NewsSessionFilter
@@ -90,6 +95,26 @@ def build_strategy():
             stop_buffer_atr=getattr(config, "ICT_STOP_BUFFER_ATR", 0.25),
         )
         return ("ict", params, 0)
+    if name == "scalp_pro_v2":
+        params = strat_scalp_pro_v2.ScalpProV2Params(
+            ema_fast=getattr(config, "PRO2_EMA_FAST", 9),
+            ema_slow=getattr(config, "PRO2_EMA_SLOW", 21),
+            rsi_period=getattr(config, "PRO2_RSI_PERIOD", 14),
+            rsi_floor=getattr(config, "PRO2_RSI_FLOOR", 45.0),
+            rsi_ceiling=getattr(config, "PRO2_RSI_CEILING", 68.0),
+            atr_period=getattr(config, "ATR_PERIOD", 14),
+            pullback_atr=getattr(config, "PRO2_PULLBACK_ATR", 0.6),
+            use_vwap=getattr(config, "PRO2_USE_VWAP", True),
+            min_atr_points=getattr(config, "PRO2_MIN_ATR_POINTS", 8.0),
+            max_atr_points=getattr(config, "PRO2_MAX_ATR_POINTS", 70.0),
+            use_trend_filter=getattr(config, "PRO2_USE_TREND_FILTER", True),
+            trend_ema=getattr(config, "PRO2_TREND_EMA", 200),
+            trend_slope_lookback=getattr(config, "PRO2_TREND_SLOPE_LOOKBACK", 10),
+            use_slope_confirm=getattr(config, "PRO2_USE_SLOPE_CONFIRM", True),
+            use_session=getattr(config, "PRO2_USE_SESSION", True),
+            sessions_utc=getattr(config, "PRO2_SESSIONS_UTC", [(13.5, 20.0), (7.0, 11.0)]),
+        )
+        return ("scalp_pro_v2", params, params.warmup + 60)
     if name == "scalp_pro":
         params = strat_scalp_pro.ScalpProParams(
             ema_fast=getattr(config, "PRO_EMA_FAST", 9),
@@ -130,6 +155,8 @@ def build_strategy():
 
 def compute_signal(strat_name, params, df, point):
     """Dispatch to the right strategy's latest_signal."""
+    if strat_name == "scalp_pro_v2":
+        return strat_scalp_pro_v2.latest_signal(df, params, point)
     if strat_name == "scalp_pro":
         return strat_scalp_pro.latest_signal(df, params, point)
     if strat_name == "scalp":
@@ -218,9 +245,17 @@ def run_cycle(executor, risk, params, spec, notifier, strat_name, bars_needed, n
         sig.action, sig.price, sig.atr, sig.fast, sig.slow, sig.trend, sig.rsi, sig.reason,
     )
 
-    # 3. Trailing stops on existing positions (uses latest ATR).
-    if config.USE_TRAILING_STOP and sig.atr > 0:
-        executor.update_trailing_stops(sig.atr, config.TRAIL_ATR_MULTIPLIER)
+    # 3. Trailing stops + breakeven on existing positions (uses latest ATR).
+    if sig.atr > 0:
+        if getattr(config, "USE_BREAKEVEN", False):
+            r_dist = risk.stop_distance(sig.atr)
+            executor.update_breakeven(
+                r_dist,
+                trigger_r=getattr(config, "BE_TRIGGER_R", 1.0),
+                lock_r=getattr(config, "BE_LOCK_R", 0.05),
+            )
+        if config.USE_TRAILING_STOP:
+            executor.update_trailing_stops(sig.atr, config.TRAIL_ATR_MULTIPLIER)
 
     if sig.action == HOLD:
         return
